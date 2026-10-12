@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: yahoo-forwarder
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    plan: free
+    envVars:
+      - key: YAHOO_EMAIL
+        sync: false          # 在 Render 面板手动填写
+      - key: YAHOO_APP_PASSWORD
+        sync: false
+      - key: FORWARD_TO
+        sync: false
