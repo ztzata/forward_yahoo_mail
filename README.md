@@ -1,5 +1,5 @@
 # forward_yahoo_mail
-Vistit this server, it will forward the last email to another email address
+Vistit this server, it will forward the last email from Yahoo email to another email address
 
 Environment:
 
