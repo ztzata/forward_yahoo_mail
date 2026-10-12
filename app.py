@@ -189,7 +189,7 @@ def send_via_brevo(payload):
         "api-key": BREVO_API_KEY,
         "content-type": "application/json",
     }
-    resp = requests.post(BREVO_API_URL, json=payload, headers=headers, timeout=30)
+    resp = requests.post(BREVO_API_URL, json=payload, headers=headers, timeout=300)
     if resp.status_code not in (200, 201, 202):
         raise Exception(f"Brevo API 返回错误 {resp.status_code}: {resp.text}")
     return resp.json()
@@ -239,9 +239,9 @@ def trigger():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@app.route("/health")
-def health():
-    return "OK", 200
+# @app.route("/health")
+# def health():
+#     return "OK", 200
 
 
 if __name__ == "__main__":
