@@ -1,29 +1,22 @@
 import os
 import imaplib
-import smtplib
 import email
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.header import Header, decode_header
-from flask import Flask, jsonify
+import re
+from email.header import decode_header
+from flask import Flask, Response
 
 app = Flask(__name__)
 
-# ---------- 环境变量读取 ----------
+# ---------- 环境变量 ----------
 YAHOO_EMAIL = os.environ.get("YAHOO_EMAIL")
 YAHOO_APP_PASSWORD = os.environ.get("YAHOO_APP_PASSWORD")
-FORWARD_TO = os.environ.get("FORWARD_TO", "ztzaztza@gmail.com")
 
-# Yahoo IMAP / SMTP 设置
 IMAP_SERVER = "imap.mail.yahoo.com"
 IMAP_PORT = 993
-SMTP_SERVER = "smtp.mail.yahoo.com"
-SMTP_PORT = 465
 
 
-# ---------- 头部编解码工具 ----------
+# ---------- 头部解码 ----------
 def decode_mime_words(s):
-    """解码 MIME 编码的头部，例如 =?utf-8?B?...?= 还原为原文"""
     if not s:
         return ""
     result = ""
@@ -38,155 +31,80 @@ def decode_mime_words(s):
     return result
 
 
-def encode_header(s):
-    """把可能含非 ASCII 的字符串安全编码为邮件头部"""
-    try:
-        s.encode("ascii")
-        return s
-    except UnicodeEncodeError:
-        return Header(s, "utf-8").encode()
-
-
-# ---------- 正文/附件解析 ----------
+# ---------- 正文提取 ----------
 def extract_bodies(msg):
-    """从邮件中提取 text/plain 和 text/html 正文，返回 (plain, html)"""
-    plain, html_body = None, None
+    """返回 (plain_str, html_str)，可能其中之一为 None"""
+    plain_raw = html_raw = None
+    plain_charset = html_charset = None
 
     if msg.is_multipart():
         for part in msg.walk():
-            # 跳过本身就是附件容器的情况
             disp = str(part.get("Content-Disposition") or "").lower()
             if "attachment" in disp:
                 continue
             ctype = part.get_content_type()
-            if ctype == "text/plain" and plain is None:
-                plain = part.get_payload(decode=True)
-            elif ctype == "text/html" and html_body is None:
-                html_body = part.get_payload(decode=True)
+            if ctype == "text/plain" and plain_raw is None:
+                plain_raw = part.get_payload(decode=True)
+                plain_charset = part.get_content_charset()
+            elif ctype == "text/html" and html_raw is None:
+                html_raw = part.get_payload(decode=True)
+                html_charset = part.get_content_charset()
     else:
         payload = msg.get_payload(decode=True)
         if msg.get_content_type() == "text/html":
-            html_body = payload
+            html_raw = payload
+            html_charset = msg.get_content_charset()
         else:
-            plain = payload
+            plain_raw = payload
+            plain_charset = msg.get_content_charset()
 
-    return plain, html_body
+    def _d(raw, cs):
+        if raw is None:
+            return None
+        try:
+            return raw.decode(cs or "utf-8", errors="replace")
+        except (LookupError, UnicodeDecodeError):
+            return raw.decode("utf-8", errors="replace")
+
+    return _d(plain_raw, plain_charset), _d(html_raw, html_charset)
 
 
 def collect_attachments(msg):
-    """收集原始邮件中的附件（含文件名或 Content-Disposition: attachment 的部件）"""
-    attachments = []
+    """返回 [(filename, size_bytes, content_type), ...]"""
+    result = []
     if not msg.is_multipart():
-        return attachments
-
+        return result
     for part in msg.walk():
         ctype = part.get_content_type()
-        # 跳过容器类型与正文类型
         if ctype.startswith("multipart/"):
             continue
-        if ctype in ("text/plain", "text/html"):
-            # 但如果它带文件名，说明是作为附件发送的文本
-            if not part.get_filename():
-                continue
-
+        if ctype in ("text/plain", "text/html") and not part.get_filename():
+            continue
         disp = str(part.get("Content-Disposition") or "").lower()
         filename = part.get_filename()
-
         if filename or "attachment" in disp:
-            attachments.append(part)
-
-    return attachments
-
-
-def decode_bytes_to_str(raw, charset):
-    if raw is None:
-        return ""
-    try:
-        return raw.decode(charset or "utf-8", errors="replace")
-    except (LookupError, UnicodeDecodeError):
-        return raw.decode("utf-8", errors="replace")
+            content = part.get_payload(decode=True) or b""
+            result.append((
+                decode_mime_words(filename) if filename else "(无名文件)",
+                len(content),
+                ctype,
+            ))
+    return result
 
 
-# ---------- 构建转发邮件 ----------
-def build_forward_message(original_msg):
-    """把原始邮件正文内联到转发邮件中，附件保持为附件"""
-    original_subject = decode_mime_words(original_msg.get("Subject")) or "(无主题)"
-    original_from = decode_mime_words(original_msg.get("From")) or "(未知发件人)"
-    original_to = decode_mime_words(original_msg.get("To")) or "(未知收件人)"
-    original_date = original_msg.get("Date", "(未知日期)")
-
-    # 外层用 mixed，便于挂载附件
-    forward = MIMEMultipart("mixed")
-    forward["From"] = YAHOO_EMAIL
-    forward["To"] = FORWARD_TO
-    forward["Subject"] = encode_header(f"Fwd: {original_subject}")
-
-    # 内层 alternative，同时提供纯文本与 HTML
-    body_container = MIMEMultipart("alternative")
-
-    plain_raw, html_raw = extract_bodies(original_msg)
-
-    note_plain = (
-        f"---------- 转发邮件 ----------\n"
-        f"发件人: {original_from}\n"
-        f"日期: {original_date}\n"
-        f"主题: {original_subject}\n"
-        f"收件人: {original_to}\n"
-        f"---------- 转发邮件 ----------\n\n"
+# ---------- HTML 转义 ----------
+def esc(s):
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
     )
 
-    note_html = (
-        f"<div style=\"font-family:sans-serif;font-size:13px;color:#555;"
-        f"border-bottom:1px solid #ccc;padding-bottom:8px;margin-bottom:12px;\">"
-        f"---------- 转发邮件 ----------<br>"
-        f"发件人: {original_from}<br>"
-        f"日期: {original_date}<br>"
-        f"主题: {original_subject}<br>"
-        f"收件人: {original_to}<br>"
-        f"---------- 转发邮件 ----------</div>"
-    )
 
-    # 纯文本版本：优先取原 plain，没有就从 html 退化为占位
-    if plain_raw is not None:
-        charset = None
-        if original_msg.is_multipart():
-            for part in original_msg.walk():
-                if part.get_content_type() == "text/plain" and part.get_payload(decode=True) == plain_raw:
-                    charset = part.get_content_charset()
-                    break
-        else:
-            charset = original_msg.get_content_charset()
-        plain_text = decode_bytes_to_str(plain_raw, charset)
-        body_container.attach(MIMEText(note_plain + plain_text, "plain", "utf-8"))
-    elif html_raw is not None:
-        # 没有纯文本版，就提示读者用 HTML 版查看
-        body_container.attach(MIMEText(note_plain + "(原邮件为 HTML 格式，请用支持 HTML 的客户端查看)", "plain", "utf-8"))
-
-    # HTML 版本
-    if html_raw is not None:
-        charset = None
-        if original_msg.is_multipart():
-            for part in original_msg.walk():
-                if part.get_content_type() == "text/html" and part.get_payload(decode=True) == html_raw:
-                    charset = part.get_content_charset()
-                    break
-        else:
-            charset = original_msg.get_content_charset()
-        html_text = decode_bytes_to_str(html_raw, charset)
-        body_container.attach(MIMEText(note_html + html_text, "html", "utf-8"))
-
-    forward.attach(body_container)
-
-    # 把原始附件挂到外层
-    for part in collect_attachments(original_msg):
-        forward.attach(part)
-
-    return forward
-
-
-# ---------- 主流程 ----------
-def forward_latest_email():
-    # 1. 连接 IMAP，取最新 1 封
+# ---------- 从 Yahoo 取最新邮件 ----------
+def fetch_latest_email():
     mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
     mail.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
     mail.select("INBOX")
@@ -194,41 +112,110 @@ def forward_latest_email():
     status, messages = mail.search(None, "ALL")
     if status != "OK" or not messages[0]:
         mail.logout()
-        return False, "收件箱中没有邮件"
+        return None
 
-    email_ids = messages[0].split()
-    latest_id = email_ids[-1]
-
+    latest_id = messages[0].split()[-1]
     status, msg_data = mail.fetch(latest_id, "(RFC822)")
-    if status != "OK":
-        mail.logout()
-        return False, "获取邮件内容失败"
-
-    raw_email = msg_data[0][1]
-    original_msg = email.message_from_bytes(raw_email)
     mail.logout()
+    if status != "OK":
+        return None
 
-    # 2. 构建转发邮件（正文内联，附件保留为附件）
-    forward_msg = build_forward_message(original_msg)
-
-    # 3. 发送
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as smtp:
-        smtp.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
-        smtp.sendmail(YAHOO_EMAIL, [FORWARD_TO], forward_msg.as_string())
-
-    subject = decode_mime_words(original_msg.get("Subject")) or "(无主题)"
-    return True, f"已转发邮件：{subject}"
+    return email.message_from_bytes(msg_data[0][1])
 
 
-# ---------- Flask 路由 ----------
+# ---------- 渲染页面 ----------
+def render_page(msg):
+    subject = decode_mime_words(msg.get("Subject")) or "(无主题)"
+    from_addr = decode_mime_words(msg.get("From")) or "(未知发件人)"
+    to_addr = decode_mime_words(msg.get("To")) or "(未知收件人)"
+    date = msg.get("Date", "(未知日期)")
+
+    plain, html_body = extract_bodies(msg)
+    attachments = collect_attachments(msg)
+
+    # 正文区块：优先用 HTML，否则用纯文本
+    if html_body:
+        body_block = html_body
+    elif plain:
+        body_block = f"<pre style='white-space:pre-wrap;font-family:inherit'>{esc(plain)}</pre>"
+    else:
+        body_block = "<p><em>(邮件无正文内容)</em></p>"
+
+    # 附件列表
+    if attachments:
+        rows = "".join(
+            f"<li>📎 {esc(name)} <span style='color:#888'>({size} 字节, {esc(ct)})</span></li>"
+            for name, size, ct in attachments
+        )
+        attach_block = f"<h3>附件</h3><ul>{rows}</ul>"
+    else:
+        attach_block = ""
+
+    # 简单隔离 HTML 邮件样式，避免污染外层
+    page = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{esc(subject)}</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+         margin: 0; background: #f5f5f5; }}
+  .meta {{ background: #fff; padding: 20px 24px; border-bottom: 1px solid #e0e0e0; }}
+  .meta h1 {{ font-size: 20px; margin: 0 0 12px 0; word-break: break-all; }}
+  .meta table {{ border-collapse: collapse; font-size: 13px; color: #555; }}
+  .meta td {{ padding: 2px 10px 2px 0; vertical-align: top; }}
+  .meta td.k {{ color: #888; white-space: nowrap; }}
+  .body {{ background: #fff; margin: 16px; padding: 20px 24px;
+           border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+           overflow-x: auto; }}
+  .attach {{ background: #fff; margin: 0 16px 24px; padding: 16px 24px;
+             border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+             font-size: 14px; }}
+  .attach h3 {{ margin: 0 0 8px; font-size: 14px; color: #333; }}
+  .attach ul {{ margin: 0; padding-left: 20px; }}
+  .error {{ margin: 40px auto; max-width: 600px; background: #fff;
+            border-left: 4px solid #d33; padding: 20px 24px;
+            font-family: sans-serif; }}
+</style>
+</head>
+<body>
+  <div class="meta">
+    <h1>{esc(subject)}</h1>
+    <table>
+      <tr><td class="k">发件人</td><td>{esc(from_addr)}</td></tr>
+      <tr><td class="k">收件人</td><td>{esc(to_addr)}</td></tr>
+      <tr><td class="k">日期</td><td>{esc(date)}</td></tr>
+    </table>
+  </div>
+  <div class="body">{body_block}</div>
+  {f'<div class="attach">{attach_block}</div>' if attach_block else ''}
+</body>
+</html>"""
+    return page
+
+
+def render_error(message):
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>错误</title></head>
+<body style="font-family:sans-serif;background:#f5f5f5">
+<div class="error" style="margin:40px auto;max-width:600px;background:#fff;
+     border-left:4px solid #d33;padding:20px 24px;">
+  <h2 style="margin-top:0">出错了</h2>
+  <pre style="white-space:pre-wrap">{esc(message)}</pre>
+</div>
+</body></html>"""
+
+
+# ---------- 路由 ----------
 @app.route("/")
-def trigger():
+def index():
     try:
-        success, message = forward_latest_email()
-        code = 200 if success else 500
-        return jsonify({"status": "ok" if success else "error", "message": message}), code
+        msg = fetch_latest_email()
+        if msg is None:
+            return Response(render_error("收件箱为空或获取失败"), mimetype="text/html", status=500)
+        return Response(render_page(msg), mimetype="text/html")
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return Response(render_error(str(e)), mimetype="text/html", status=500)
 
 
 @app.route("/health")
