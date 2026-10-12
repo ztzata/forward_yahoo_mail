@@ -15,7 +15,8 @@ app = Flask(__name__)
 YAHOO_EMAIL = os.environ.get("YAHOO_EMAIL")
 YAHOO_APP_PASSWORD = os.environ.get("YAHOO_APP_PASSWORD")
 FORWARD_TO = os.environ.get("FORWARD_TO")
-BREVO_API_KEY = os.environ.get("BREVO_API_KEY")  # 新增
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
+SENDER = os.environ.get("SENDER") 
 
 # Yahoo IMAP 设置（收邮件仍然用 IMAP）
 IMAP_SERVER = "imap.mail.yahoo.com"
@@ -152,7 +153,7 @@ def build_email_payload(original_msg):
 
     # 构建 Brevo API 的 payload
     payload = {
-        "sender": {"name": "Yahoo Forwarder", "email": YAHOO_EMAIL},
+        "sender": {"name": "Yahoo Forwarder", "email": SENDER},
         "to": [{"email": FORWARD_TO}],
         "subject": f"Fwd: {original_subject}",
         "textContent": plain_text,
