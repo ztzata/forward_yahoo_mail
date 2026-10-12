@@ -239,9 +239,9 @@ def trigger():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-# @app.route("/health")
-# def health():
-#     return "OK", 200
+@app.route("/health")
+def health():
+    return "OK", 200
 
 
 if __name__ == "__main__":
