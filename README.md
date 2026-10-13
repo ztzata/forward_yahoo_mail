@@ -3,8 +3,14 @@ Vistit this server, it will forward the last email from Yahoo email to another e
 
 Environment:
 
-YAHOO_EMAIL = os.environ.get("YAHOO_EMAIL")
+YAHOO_EMAIL
 
-YAHOO_APP_PASSWORD = os.environ.get("YAHOO_APP_PASSWORD")
+YAHOO_APP_PASSWORD
 
-FORWARD_TO = os.environ.get("FORWARD_TO")
+FORWARD_TO
+
+BREVO_API_KEY:	Brevo API Key
+
+SENDER:	Email Sender, must verified by Brevo first.
+
+Note: You will need your own domain to send email from Brevo server! Public email address will be rejected!
