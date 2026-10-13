@@ -13,7 +13,7 @@ YAHOO_APP_PASSWORD = os.environ.get("YAHOO_APP_PASSWORD")
 FORWARD_TO = os.environ.get("FORWARD_TO")
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
 SENDER = os.environ.get("SENDER")  # Brevo 发件人地址
-IMAP_SERVER = os.environ.get(IMAP_SERVER, "imap.mail.yahoo.com")
+IMAP_SERVER = os.environ.get("IMAP_SERVER", "imap.mail.yahoo.com")
 
 IMAP_PORT = 993
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
