@@ -18,7 +18,7 @@ FORWARD_TO = os.environ.get("FORWARD_TO")
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
 SENDER = os.environ.get("SENDER") 
 
-# Yahoo IMAP 设置（收邮件仍然用 IMAP）
+# Yahoo IMAP 设置
 IMAP_SERVER = "imap.mail.yahoo.com"
 IMAP_PORT = 993
 
@@ -26,7 +26,7 @@ IMAP_PORT = 993
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 
-# ---------- 头部编解码工具（保持不变） ----------
+# ---------- 头部编解码工具  ----------
 def decode_mime_words(s):
     if not s:
         return ""
@@ -42,7 +42,7 @@ def decode_mime_words(s):
     return result
 
 
-# ---------- 正文/附件解析（保持不变） ----------
+# ---------- 正文/附件解析 ----------
 def extract_bodies(msg):
     plain, html_body = None, None
     if msg.is_multipart():
@@ -91,6 +91,7 @@ def decode_bytes_to_str(raw, charset):
         return raw.decode("utf-8", errors="replace")
 
 
+# ---------- 构建邮件内容（返回字典，供 Brevo API 使用） ----------
 # ---------- 构建邮件内容（返回字典，供 Brevo API 使用） ----------
 def build_email_payload(original_msg):
     original_subject = decode_mime_words(original_msg.get("Subject")) or "(无主题)"
@@ -151,34 +152,14 @@ def build_email_payload(original_msg):
         # 没有 HTML 版，用纯文本包一下
         html_content = f"<pre>{note_plain}{plain_text.replace(note_plain, '')}</pre>"
 
-    # 构建 Brevo API 的 payload
+    # 构建 Brevo API 的 payload（不含附件）
     payload = {
-        "sender": {"name": "Yahoo Forwarder", "email": SENDER},
+        "sender": {"name": "Yahoo Forwarder", "email": YAHOO_EMAIL},
         "to": [{"email": FORWARD_TO}],
         "subject": f"Fwd: {original_subject}",
         "textContent": plain_text,
         "htmlContent": html_content,
     }
-
-    # 处理附件
-    attachments = []
-    for part in collect_attachments(original_msg):
-        filename = part.get_filename()
-        if not filename:
-            continue
-        # 解码文件名
-        filename = decode_mime_words(filename)
-        content = part.get_payload(decode=True)
-        if content is None:
-            continue
-        import base64
-        attachments.append({
-            "name": filename,
-            "content": base64.b64encode(content).decode("ascii"),
-        })
-
-    if attachments:
-        payload["attachment"] = attachments
 
     return payload, original_subject
 
